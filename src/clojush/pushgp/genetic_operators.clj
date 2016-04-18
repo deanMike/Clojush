@@ -1,5 +1,5 @@
 (ns clojush.pushgp.genetic-operators
-  (:use [clojush util random individual globals]
+  (:use [clojush util random individual globals interpreter translate pushstate]
         clojush.instructions.tag
         [clojure.math.numeric-tower])
   (:require [clojure.string :as string]))
@@ -71,7 +71,7 @@
                                         (integer? const) (round (perturb-with-gaussian-noise uniform-mutation-int-gaussian-standard-deviation const))
                                         (string? const) (string-tweak const)
                                         (or (= const true) (= const false)) (lrand-nth [true false])
-                                        :else (:instruction (first (random-plush-genome 1 atom-generators argmap))))))))               
+                                        :else (:instruction (first (random-plush-genome 1 atom-generators argmap))))))))
         token-mutator (fn [token]
                         (if (< (lrand) uniform-mutation-rate)
                           (if (< (lrand) uniform-mutation-constant-tweak-rate)
@@ -138,6 +138,22 @@
                                     (:ancestors ind))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; uniform deletion
+
+(defn uniform-deletion
+  "Returns the individual with each element of its genome possibly deleted, with probability
+given by uniform-deletion-rate."
+  [ind {:keys [uniform-deletion-rate maintain-ancestors]}]
+  (let [new-genome (filter identity
+                           (map #(if (< (lrand) uniform-deletion-rate) % nil)
+                                (:genome ind)))]
+    (make-individual :genome new-genome
+                     :history (:history ind)
+                     :ancestors (if maintain-ancestors
+                                  (cons (:genome ind) (:ancestors ind))
+                                  (:ancestors ind)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; alternation
 
 (defn alternation
@@ -151,7 +167,7 @@
                           use-s1 (lrand-nth [true false])
                           result-genome []]
                      (if (or (>= i (count (if use-s1 s1 s2))) ;; finished current program
-                             (> (count result-genome) (* 2 max-points))) ;; runaway growth
+                             (> (count result-genome) max-points)) ;; runaway growth
                        (seq result-genome);; Return, converting back into a sequence
                        (if (< (lrand) alternation-rate)
                          (recur (max 0 (+' i (Math/round (*' alignment-deviation (gaussian-noise-factor)))))
@@ -217,3 +233,113 @@
                        :ancestors (if maintain-ancestors
                                     (cons (:genome parent1) (:ancestors parent1))
                                     (:ancestors parent1))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; autoconstuction
+
+;; NOTE: EXPERIMENTAL!
+
+(defn process-genome-for-autoconstruction
+  "Replaces input instructions with noops and, if deterministic? is true then
+replaces non-autoconstructive rand instructions with noops, while if deterministic? 
+is false replaces autoconstructive_<type>_rand with <type>_rand."
+  [genome deterministic?]
+  (let [input-instruction? (fn [instruction]
+                             (and (symbol? instruction)
+                                  (or (re-seq #"in\d+" (name instruction)) ;; from input-output
+                                      (re-seq #"in_dm" (name instruction)) ;; from digital-multiplier
+                                      (some #{instruction}
+                                            '(a0 a1 a2 d0 d1 d2 d3 d4 d5 d6 d7)))))] ;; from mux problems
+    (map (fn [instruction-map]
+           (if (input-instruction? (:instruction instruction-map))
+             (assoc instruction-map :instruction 'code_noop)
+             (if deterministic?
+               (if (some #{(:instruction instruction-map)}
+                          '(boolean_rand integer_rand float_rand code_rand
+                                         string_rand char_rand 
+                                         genome_gene_randomize))
+                 (assoc instruction-map :instruction 'code_noop)
+                 instruction-map)
+               (if (= (:instruction instruction-map) 'autoconstructive_integer_rand)
+                 (assoc instruction-map :instruction 'integer_rand)
+                 (if (= (:instruction instruction-map) 'autoconstructive_boolean_rand)
+                   (assoc instruction-map :instruction 'boolean_rand)
+                   instruction-map)))))
+         genome)))
+
+(defn produce-child-genome-by-autoconstruction
+  "Runs the program expressed by parent1-genome with both parent genomes
+on the genome stack and also available via input instructions, and returns
+the resulting top genome."
+  [parent1-genome parent2-genome deterministic? argmap]
+  (let [run-result (top-item :genome
+                             (run-push
+                               (translate-plush-genome-to-push-program
+                                 {:genome (process-genome-for-autoconstruction
+                                            parent1-genome
+                                            deterministic?)}
+                                 argmap)
+                               (-> (->> (make-push-state)
+                                     (push-item parent2-genome :genome)
+                                     (push-item parent1-genome :genome))
+                                 (assoc :parent1-genome parent1-genome)
+                                 (assoc :parent2-genome parent2-genome))))]
+    (if (or (seq? run-result) (vector? run-result))
+      run-result
+      ())))
+
+(defn expressed-program-sequence-from-genome
+  "Returns an open-close sequenc for the program produced by expressing
+genome g."
+  [g argmap]
+  (ensure-list
+    (list-to-open-close-sequence
+      (translate-plush-genome-to-push-program {:genome g} argmap))))
+
+(defn expressed-difference
+  "Returns the levenshtein distance between the open-close sequences for the
+programs encoded by genomes g1 and g2."
+  [g1 g2 argmap]
+  (levenshtein-distance (expressed-program-sequence-from-genome g1 argmap)
+                        (expressed-program-sequence-from-genome g2 argmap)))
+
+(defn diversifying?
+  "Returns true iff genome g passes the diversification test."
+  [g argmap]
+  (let [delta #(expressed-difference 
+                 g
+                 (produce-child-genome-by-autoconstruction g g false argmap)
+                 argmap)
+        diffs (repeatedly 2 delta)]
+    (and (> (reduce min diffs) 0) ;; diversification threshold set here
+         (> (count (distinct diffs)) 1))))
+
+(defn autoconstruction
+  "Returns a genome for a child produced either by autoconstruction (executing parent1
+with both parents on top of the genome stack and also available via input instructions)
+or by cloning. In either case if the child is not diversifying then a random
+genome is returned instead IF that is itself diversifying; if it isn't then an empty 
+genome is returned. The construct/clone ration is hardcoded here, but might
+be set globally or eliminated in the future."
+  [parent1 parent2 {:keys [maintain-ancestors atom-generators max-genome-size-in-initial-program error-function]
+                    :as argmap}]
+  (let [construct-clone-ratio 1.0 ;; maybe make this a global parameter or eliminate
+        parent1-genome (:genome parent1)
+        parent2-genome (:genome parent2)
+        child-genome (if (< (lrand) construct-clone-ratio)
+                       (produce-child-genome-by-autoconstruction parent1-genome parent2-genome false argmap)
+                       parent1-genome)
+        variant (diversifying? child-genome argmap)
+        new-genome (if variant
+                     child-genome
+                     (random-plush-genome max-genome-size-in-initial-program atom-generators argmap))]
+    (assoc (make-individual :genome (if (or variant (diversifying? new-genome argmap))
+                                      new-genome
+                                      [])
+                            :history (:history parent1)
+                            :ancestors (if maintain-ancestors
+                                         (cons (:genome parent1) (:ancestors parent1))
+                                         (:ancestors parent1)))
+           :is-random-replacement
+           (if variant false true)
+      )))

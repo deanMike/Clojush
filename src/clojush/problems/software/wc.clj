@@ -20,7 +20,7 @@
 
 (ns clojush.problems.software.wc
   (:use clojush.pushgp.pushgp
-        [clojush pushstate interpreter random util]
+        [clojush pushstate interpreter random util globals]
         clojush.instructions.tag
         clojure.math.numeric-tower
         [clojure.string :only [split trim]]))
@@ -225,24 +225,6 @@
    [(fn [] (wc-input (inc (lrand-int 100)))) 200 500] ;; Inputs that may or may not end in a newline
    ])
 
-(defn test-and-train-data-from-domains
-  "Takes a list of domains and creates a set of (random) train inputs and a set of test
-   inputs based on the domains. Returns [train test]. A program should not
-   be considered a solution unless it is perfect on both the train and test
-   cases."
-  [domains]
-  (apply mapv concat (map (fn [[input-set n-train n-test]]
-                            (if (fn? input-set)
-                              (vector (repeatedly n-train input-set)
-                                      (repeatedly n-test input-set))
-                              (vector (if (>= n-train (count input-set))
-                                        input-set
-                                        (take n-train (shuffle input-set)))
-                                      (if (>= n-test (count input-set))
-                                        input-set
-                                        (take n-test (shuffle input-set))))))
-                          domains)))
-
 ;;Can make WC test data like this:
 ;(test-and-train-data-from-domains wc-data-domains)
 
@@ -293,36 +275,43 @@
       ([program]
         (the-actual-wc-error-function program :train))
       ([program data-cases] ;; data-cases should be :train or :test
-        (flatten
-          (doall
-            (for [[input out-char out-word out-line] (case data-cases
-                                                       :train train-cases
-                                                       :test test-cases
-                                                       [])]
-              (let [final-state (run-push program
-                                          (->> (make-push-state)
-                                            (push-item nil :auxiliary)
-                                            (push-item nil :auxiliary)
-                                            (push-item nil :auxiliary)
-                                            (push-item input :auxiliary)
-                                            (push-item input :auxiliary)))
-                    result-char (stack-ref :auxiliary 2 final-state)
-                    result-word (stack-ref :auxiliary 3 final-state)
-                    result-line (stack-ref :auxiliary 4 final-state)]
-                ; The error is the integer difference between the desired output
-                ; and the result output for each of char-count, word-count, and
-                ; line-count. Because of this, each test case results in 3
-                ; error values. If a value is missing, a penalty of 100000
-                ; is given.
-                (vector (if (number? result-char)
-                          (abs (- result-char out-char))
-                          100000)
-                        (if (number? result-word)
-                          (abs (- result-word out-word))
-                          100000)
-                        (if (number? result-line)
-                          (abs (- result-line out-line))
-                          100000))))))))))
+        (let [behavior (atom '())
+              errors (flatten
+                       (doall
+                         (for [[input out-char out-word out-line] (case data-cases
+                                                                    :train train-cases
+                                                                    :test test-cases
+                                                                    [])]
+                           (let [final-state (run-push program
+                                                       (->> (make-push-state)
+                                                         (push-item nil :auxiliary)
+                                                         (push-item nil :auxiliary)
+                                                         (push-item nil :auxiliary)
+                                                         (push-item input :auxiliary)
+                                                         (push-item input :auxiliary)))
+                                 result-char (stack-ref :auxiliary 2 final-state)
+                                 result-word (stack-ref :auxiliary 3 final-state)
+                                 result-line (stack-ref :auxiliary 4 final-state)]
+                             ; Record the behavior
+                             (when @global-print-behavioral-diversity
+                               (swap! behavior concat [result-char result-word result-line]))
+                             ; The error is the integer difference between the desired output
+                             ; and the result output for each of char-count, word-count, and
+                             ; line-count. Because of this, each test case results in 3
+                             ; error values. If a value is missing, a penalty of 100000
+                             ; is given.
+                             (vector (if (number? result-char)
+                                       (abs (- result-char out-char))
+                                       100000)
+                                     (if (number? result-word)
+                                       (abs (- result-word out-word))
+                                       100000)
+                                     (if (number? result-line)
+                                       (abs (- result-line out-line))
+                                       100000))))))]
+          (when @global-print-behavioral-diversity
+            (swap! population-behaviors conj @behavior))
+          errors)))))
 
 (defn wc-report
   "Customize generational report."
@@ -345,8 +334,8 @@
 (def argmap
   {:error-function (wc-error-function wc-data-domains)
    :atom-generators wc-atom-generators
-   :max-points 1000
-   :max-points-in-initial-program 400
+   :max-points 2000
+   :max-genome-size-in-initial-program 400
    :evalpush-limit 2000
    :population-size 1000
    :max-generations 300
@@ -360,6 +349,7 @@
    :alignment-deviation 10
    :uniform-mutation-rate 0.01
    :problem-specific-report wc-report
+   :print-behavioral-diversity true
    :report-simplifications 0
    :final-report-simplifications 5000
    :max-error 100000

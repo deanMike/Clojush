@@ -20,6 +20,29 @@
     (println (doall (map float @solution-rates)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; calculate meta-errors
+
+(defn calculate-meta-errors
+  "Calculates one meta-error for each meta-error category provided. Each
+   meta-error-category should either be a keyword for a built-in meta category
+   or a function that takes an individual and an argmap and returns a meta error value.
+   The built-in meta categories include:
+     :size (minimize size of program)
+     :compressibility (minimize ammount a program compresses compared to itself)
+     :total-error (minimize total error)
+     :unsolved-cases (maximize number of cases with zero error)"
+  [ind {:keys [meta-error-categories error-threshold] :as argmap}]
+  (let [meta-error-fn (fn [cat]
+                        (cond
+                          (fn? cat) (cat ind argmap)
+                          (= cat :size) (count (:genome ind))
+;                          (= cat :compressibility) 555 ;;TMH fix later
+                          (= cat :total-error) (:total-error ind)
+                          (= cat :unsolved-cases) (count (filter #(> % error-threshold) (:errors ind)))
+                          :else (throw (Exception. (str "Unrecognized meta category: " cat)))))]
+    (doall (map meta-error-fn meta-error-categories))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; evaluate individuals
 
 (defn compute-total-error
@@ -64,26 +87,38 @@
                           :normalization :none
                           :max-error 1000}))
   ([i error-function rand-gen
-    {:keys [reuse-errors print-history total-error-method normalization max-error]}]
+    {:keys [reuse-errors print-history total-error-method normalization max-error pass-individual-to-error-function]
+     :as argmap}]
     (random/with-rng rand-gen
       (let [p (:program i)
-            e (vec (if (and (not (nil? (:errors i))) reuse-errors)
+            raw-errors (if (or (not reuse-errors) (nil? (:errors i)) (nil? (:total-error i)))
+                         (if pass-individual-to-error-function
+                           (error-function i)
+                           (error-function p)))
+            e (vec (if (and reuse-errors (not (nil? (:errors i))))
                      (:errors i)
                      (do
                        (swap! evaluations-count inc)
-                       (normalize-errors (error-function p) normalization max-error)
+                       (normalize-errors raw-errors normalization max-error)
                        )))
-            te (if (and (not (nil? (:total-error i))) reuse-errors)
+            te (if (and reuse-errors (not (nil? (:total-error i))))
                  (:total-error i)
+                 (compute-total-error raw-errors))
+            ne (if (and reuse-errors (not (nil? (:normalized-error i))))
+                 (:normalized-error i)
                  (compute-total-error e))
             we (case total-error-method
                  :sum nil
                  :ifs nil
                  :hah (compute-hah-error e)
                  :rmse (compute-root-mean-square-error e)
-                 nil)]
-        (make-individual :program p :genome (:genome i)
-                         :errors e :total-error te :weighted-error we
-                         :history (if print-history (cons te (:history i)) (:history i))
-                         :ancestors (:ancestors i)
-                         :parent (:parent i))))))
+                 nil)
+            new-ind (assoc i ; Assign errors and history to i
+                           :errors e
+                           :total-error te
+                           :weighted-error we
+                           :normalized-error ne
+                           :history (if print-history (cons te (:history i)) (:history i))
+                           )
+            me (calculate-meta-errors new-ind argmap)]
+        (assoc new-ind :meta-errors me)))))

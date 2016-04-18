@@ -109,20 +109,14 @@
   "Takes an individual and calculates and assigns its IFS based on the summed
    error across each test case."
   [ind summed-reward-on-test-cases]
-  (let [ifs-reward (apply +' (map /
-                                  (map #(- 1.0 %) (:errors ind)) ; Should be dividing REWARD by summed (not ERRORS)
+  (let [ifs-reward (apply +' (map #(if (zero? %2) 1.0 (/ %1 %2))
+                                  (map #(- 1.0 %) (:errors ind))
                                   summed-reward-on-test-cases))
         ifs-er (cond
                  (< 1e20 ifs-reward) 0.0
                  (zero? ifs-reward) 1e20
                  (< 1e20 (/ 1.0 ifs-reward)) 1e20
                  :else (/ 1.0 ifs-reward))]
-    ;(println "\n\n\n")
-    ;(println "IFS Fitness rewards:")
-    ; (doseq [[e s i] (map vector (:errors ind) summed-reward-on-test-cases (range))]
-    ; (println (format "T%2d | Error (e): %.4f | 1-e: %.5f | s: %8.4f | (1-e)/s: %.4f" i e (- 1.0 e) s (/ (- 1.0 e) s))))
-    ;(println (format "IFS Reward: %7.4f" ifs-reward))
-    ;(println (format "IFS Error: %7.4f" ifs-er))
     (assoc ind :weighted-error ifs-er)))
 
 (defn calculate-implicit-fitness-sharing
@@ -130,18 +124,18 @@
    assign an implicit fitness sharing error to each individual. Assumes errors
    are in range [0,1] with 0 being a solution."
   [pop-agents {:keys [use-single-thread]}]
-  (println "Calculating implicit fitness sharing errors...")
+  (println "\nCalculating implicit fitness sharing errors...")
   (let [pop (map deref pop-agents)
         summed-reward-on-test-cases (map (fn [list-of-errors]
                                            (reduce +' (map #(- 1.0 %) list-of-errors)))
                                          (apply map list (map :errors pop)))]
-    (println "\nImplicit fitness sharing reward per test case:")
+    (println "Implicit fitness sharing reward per test case (lower means population performs worse):")
     (println summed-reward-on-test-cases)
     (assert (every? (fn [error] (< -0.0000001 error 1.0000001))
                     (flatten (map :errors pop)))
-            (str "All errors must be in range [0,1]. Please normalize them. Here are the offending errors:\n"
-                 (not-lazy (filter (fn [error] (not (< 0.0 error 1.0)))
-                                   (flatten (map :errors pop))))))
+            (str "All errors must be in range [0,1]. Please normalize them. Here are the first 20 offending errors:\n"
+                 (not-lazy (take 20 (filter (fn [error] (not (< 0.0 error 1.0)))
+                                            (flatten (map :errors pop)))))))
     (dorun (map #((if use-single-thread swap! send)
                    %
                    assign-ifs-error-to-individual
@@ -150,15 +144,35 @@
     (when-not use-single-thread (apply await pop-agents)))) ;; SYNCHRONIZE
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; uniform selection (i.e. no selection, for use as a baseline)
+
+(defn uniform-selection
+  "Returns an individual uniformly at random."
+  [pop]
+  (lrand-nth pop))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; parent selection
 
 (defn select
   "Returns a selected parent."
-  [pop location {:keys [parent-selection]
+  [pop location {:keys [parent-selection print-selection-counts]
                  :as argmap}]
-  (case parent-selection
-    :tournament (tournament-selection pop location argmap)
-    :lexicase (lexicase-selection pop location argmap)
-    :elitegroup-lexicase (elitegroup-lexicase-selection pop)
-    (throw (Exception. (str "Unrecognized argument for parent-selection: "
-                            parent-selection)))))
+  (let [pop-with-meta-errors (map (fn [ind] (update-in ind [:errors] concat (:meta-errors ind)))
+                                  pop)
+        selected (case parent-selection
+                   :tournament (tournament-selection pop-with-meta-errors location argmap)
+                   :lexicase (lexicase-selection pop-with-meta-errors location argmap)
+                   :elitegroup-lexicase (elitegroup-lexicase-selection pop-with-meta-errors)
+                   :leaky-lexicase (if (< (lrand) (:lexicase-leakage argmap))
+                                     (uniform-selection pop-with-meta-errors)
+                                     (lexicase-selection pop-with-meta-errors location argmap))
+                   :uniform (uniform-selection pop-with-meta-errors)
+                   (throw (Exception. (str "Unrecognized argument for parent-selection: "
+                                           parent-selection))))]
+    (when print-selection-counts
+      (swap! selection-counts update-in [(:uuid selected)] (fn [sel-count]
+                                                             (if (nil? sel-count)
+                                                               1
+                                                               (inc sel-count)))))
+    selected))

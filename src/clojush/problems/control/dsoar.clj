@@ -223,21 +223,18 @@
       state)))
 
 (define-registered if-obstacle
+  ^{:stack-types [:auxiliary] :parentheses 2}
   (fn [state]
     (if-not (empty? (:auxiliary state))
       (if-obstacle-in state)
       state)))
 
 (define-registered if-dirty
+  ^{:stack-types [:auxiliary] :parentheses 2}
   (fn [state]
     (if-not (empty? (:auxiliary state))
       (if-dirty-in state)
       state)))
-
-; Set paren requirements for new instructions
-(swap! instr-paren-requirements assoc
-       'if-dirty 2
-       'if-obstacle 2)
 
 (defn mopper-fitness
   "Returns a fitness function for the dsoar problem with a floor of the
@@ -293,7 +290,7 @@
    ;:simplification-probability 0.3
    ;:reproduction-probability 0.1
    ;:reproduction-simplifications 10
-   :max-points 200
-   :max-points-in-initial-program 200
+   :max-points 400
+   :max-genome-size-in-initial-program 200
    :evalpush-limit 1000
    })

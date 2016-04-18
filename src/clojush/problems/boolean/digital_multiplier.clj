@@ -37,7 +37,7 @@
 
 (defn in-symbols
   [num-bits]
-  (map #(vector % (symbol (str "in" %))) (range num-bits)))
+  (map #(vector % (symbol (str "in_dm" %))) (range num-bits)))
 
 (defn define-ins
   [num-bits]
@@ -58,7 +58,7 @@
 
 (defn out-symbols
   [num-bits]
-  (map #(vector % (symbol (str "out" %))) (range num-bits)))
+  (map #(vector % (symbol (str "out_dm" %))) (range num-bits)))
 
 (defn define-outs
   [num-bits]
@@ -129,8 +129,8 @@
      :atom-generators (dm-atom-generators num-bits-n)
      :population-size 1000
      :max-generations 500
-     :max-points 400
-     :max-points-in-initial-program 200
+     :max-points 800
+     :max-genome-size-in-initial-program 200
      :evalpush-limit 400
      :epigenetic-markers []
      :genetic-operator-probabilities {[:alternation :uniform-mutation] 1}

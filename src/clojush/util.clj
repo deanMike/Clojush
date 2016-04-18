@@ -8,6 +8,33 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; utilities
 
+(def literals
+  (atom
+    {:integer integer?
+     :float float?
+     :char char?
+     :string string?
+     :boolean (fn [thing] (or (= thing true) (= thing false)))
+     :vector_integer (fn [thing] (and (vector? thing) (integer? (first thing))))
+     :vector_float (fn [thing] (and (vector? thing) (float? (first thing))))
+     :vector_string (fn [thing] (and (vector? thing) (string? (first thing))))
+     :vector_boolean (fn [thing] (and (vector? thing) (or (= (first thing) true) (= (first thing) false))))
+     }))
+
+(defn recognize-literal
+  "If thing is a literal, return its type -- otherwise return false."
+  [thing]
+  (loop [m (seq @literals)]
+    (if-let [[type pred] (first m)]
+      (if (pred thing) type
+        (recur (rest m)))
+      nil)))
+
+;; Add new literals by just assoc'ing on the new predicate. e.g.:
+;; (swap! literals :symbol symbol?)
+
+(def debug-recent-instructions ())
+
 (defn seq-zip
   "Returns a zipper for nested sequences, given a root sequence"
   {:added "1.0"}
@@ -45,20 +72,54 @@
       (and (< n min-number-magnitude) (> n (- min-number-magnitude))) 0.0
       :else n)))
 
-(defn count-points
-  "Returns the number of points in tree, where each atom and each pair of parentheses 
-   counts as a point."
-  [tree]
-  (if (seq? tree)
-    (inc (apply + (map count-points tree)))
-    1))
+(defn round-to-n-decimal-places
+  "If a number, rounds float f to n decimal places."
+  [f n]
+  (if (not (number? f))
+    f
+    (let [factor (math/expt 10 n)]
+      (double (/ (math/round (* f factor)) factor)))))
 
 (defn count-parens
   "Returns the number of paren pairs in tree"
   [tree]
-  (if (seq? tree)
-    (inc (apply + (map count-parens tree)))
-    0))
+  (loop [remaining tree
+         total 0]
+    (cond (not (seq? remaining)) 
+          total
+          ;; 
+          (empty? remaining) 
+          (inc total)
+          ;;
+          (not (seq? (first remaining))) 
+          (recur (rest remaining) 
+                 total)
+          ;;
+          :else 
+          (recur (concat (first remaining) 
+                         (rest remaining)) 
+                 (inc total)))))
+
+(defn count-points
+  "Returns the number of points in tree, where each atom and each pair of parentheses 
+   counts as a point."
+  [tree]
+  (loop [remaining tree
+         total 0]
+    (cond (not (seq? remaining)) 
+          (inc total)
+          ;; 
+          (empty? remaining) 
+          (inc total)
+          ;;
+          (not (seq? (first remaining))) 
+          (recur (rest remaining) 
+                 (inc total))
+          ;;
+          :else 
+          (recur (concat (first remaining) 
+                         (rest remaining)) 
+                 (inc total)))))
 
 (defn code-at-point 
   "Returns a subtree of tree indexed by point-index in a depth first traversal."
@@ -100,10 +161,10 @@
             (zip/root (zip/replace z '())) ;; used to just return (zip/root z)
             (recur (zip/next z) (dec i))))))))
 
-; Note: Well, I think I figured out why truncate was there. When I tried running
+; Note: Well, I (Tom) think I figured out why truncate was there. When I tried running
 ; the change problem, it threw an exception trying to cast into an int a number
 ; that was too big. Maybe there's a different principled way to use casting, but 
-; 'm just going to add truncate back for now!
+; I'm just going to add truncate back for now!
 (defn truncate
   "Returns a truncated integer version of n."
   [n]
@@ -207,4 +268,80 @@
 ;(open-close-sequence-to-list '(:open 1 2 :open a b :open c :close :open :open d :close :close e :close :close))
 ;(open-close-sequence-to-list '(:open 1 :close :open 2 :close))
 ;(open-close-sequence-to-list '(:open :open 1 :close :open 2 :close :close))
-             
+
+(defn test-and-train-data-from-domains
+  "Takes a list of domains and creates a set of (random) train inputs and a set of test
+   inputs based on the domains. Returns [train test]. A program should not
+   be considered a solution unless it is perfect on both the train and test
+   cases."
+  [domains]
+  (apply mapv concat (map (fn [[input-set n-train n-test]]
+                            (if (fn? input-set)
+                              (vector (repeatedly n-train input-set)
+                                      (repeatedly n-test input-set))
+                              (let [shuffled-inputs (shuffle input-set)
+                                    train-inputs (if (= n-train (count input-set))
+                                                   input-set ; NOTE: input-set is not shuffled if it is the same size as n-train
+                                                   (take n-train shuffled-inputs))
+                                    test-inputs (if (= n-test (count input-set))
+                                                   input-set ; NOTE: input-set is not shuffled if it is the same size as n-test
+                                                   (drop n-train shuffled-inputs))]
+                                (assert (= (+ n-train n-test) (count input-set)) "Sizes of train and test sets don't add up to the size of the input set.")
+                                (vector train-inputs test-inputs))))
+                          domains)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; from https://github.com/KushalP/mailcheck-clj/blob/master/src/mailcheck/levenshtein.clj
+
+(defn compute-next-row
+  "computes the next row using the prev-row current-element and the other seq"
+  [prev-row current-element other-seq pred]
+  (reduce
+    (fn [row [diagonal above other-element]]
+      (let [update-val (if (pred other-element current-element)
+                         ;; if the elements are deemed equivalent according to the predicate
+                         ;; pred, then no change has taken place to the string, so we are
+                         ;; going to set it the same value as diagonal (which is the previous edit-distance)
+                         diagonal
+                         ;; in the case where the elements are not considered equivalent, then we are going
+                         ;; to figure out if its a substitution (then there is a change of 1 from the previous
+                         ;; edit distance) thus the value is diagonal + 1 or if its a deletion, then the value
+                         ;; is present in the columns, but not in the rows, the edit distance is the edit-distance
+                         ;; of last of row + 1 (since we will be using vectors, peek is more efficient)
+                         ;; or it could be a case of insertion, then the value is above+1, and we chose
+                         ;; the minimum of the three
+                         (inc (min diagonal above (peek row)))
+                         )]
+        (conj row update-val)))
+    ;; we need to initialize the reduce function with the value of a row, since we are
+    ;; constructing this row from the previous one, the row is a vector of 1 element which
+    ;; consists of 1 + the first element in the previous row (edit distance between the prefix so far
+    ;; and an empty string)
+    [(inc (first prev-row))]
+    ;; for the reduction to go over, we need to provide it with three values, the diagonal
+    ;; which is the same as prev-row because it starts from 0, the above, which is the next element
+    ;; from the list and finally the element from the other sequence itself.
+    (map vector prev-row (next prev-row) other-seq)))
+
+(defn levenshtein-distance
+  "Levenshtein Distance - http://en.wikipedia.org/wiki/Levenshtein_distance
+     In information theory and computer science, the Levenshtein distance is a
+     metric for measuring the amount of difference between two sequences. This
+     is a functional implementation of the levenshtein edit
+     distance with as little mutability as possible.
+     Still maintains the O(n*m) guarantee."
+  [a b & {p :predicate  :or {p =}}]
+  (cond
+    (empty? a) (count b)
+    (empty? b) (count a)
+    :else (peek
+            (reduce
+              ;; we use a simple reduction to convert the previous row into the next-row  using the
+              ;; compute-next-row which takes a current element, the previous-row computed so far
+              ;; and the predicate to compare for equality.
+              (fn [prev-row current-element]
+                (compute-next-row prev-row current-element b p))
+              ;; we need to initialize the prev-row with the edit distance between the various prefixes of
+              ;; b and the empty string.
+              (range (inc (count b)))
+              a))))

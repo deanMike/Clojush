@@ -4,7 +4,7 @@
 
 (ns clojush.problems.demos.odd-csv-and-json
   (:use clojush.pushgp.pushgp)
-  (:require clojush.examples.odd))
+  (:require clojush.problems.demos.odd))
 
 ;;;;;;;;;;;;
 ;; The "odd" problem: take a positive integer input and push a Boolean indicating
@@ -14,11 +14,12 @@
 ;; This version shows how you can print csv and json log files.
 
 (def argmap
-  (merge clojush.examples.odd/argmap
+  (merge clojush.problems.demos.odd/argmap
          {:print-csv-logs true
           :print-json-logs true
           :csv-log-filename "log.csv"
           :json-log-filename "log.json"
+          :csv-columns [:generation :location :parent-uuids :genetic-operators :push-program-size :plush-genome-size :push-program :plush-genome :total-error :test-case-errors]
           :log-fitnesses-for-all-cases false
           :json-log-program-strings false
           }))

@@ -1,5 +1,6 @@
 (ns clojush.pushstate
-  (:use [clojush.globals]))
+  (:use [clojush.globals]
+        [clojure.set]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; states, stacks, and instructions
@@ -8,9 +9,9 @@
 
 ;(defmacro define-push-state-structure []
 ;  `(defstruct push-state ~@push-types))
-
+;
 ;(define-push-state-structure)
-
+;
 ;(defn make-push-state
 ;  "Returns an empty push state."
 ;  []
@@ -52,7 +53,7 @@
   [state]
   (doseq [t push-types]
     (printf "%s = " t)
-    (println (t state))
+    (prn (t state))
     (flush)))
 
 (defn push-item
@@ -123,3 +124,25 @@
   "Returns a list of all registered instructions aside from random instructions."
   []
   (filter #(not (.endsWith (name %) "_rand")) @registered-instructions))
+
+(defn registered-for-stacks
+  "Takes a list of stacks and returns all instructions that have all
+   of their stack requirements fulfilled. This won't include random instructions
+   unless :random is in the types list. This won't include parenthesis-altering
+   instructions unless :parentheses is in the types list."
+  [types-list]
+  (doseq [[instr instr-fn] @instruction-table]
+    (assert (:stack-types (meta instr-fn)) (format "Instruction %s does not have :stack-types defined in metadata." (name instr))))
+  (map first
+       (filter (fn [[instr instr-fn]]
+                 (and (:stack-types (meta instr-fn))
+                      (clojure.set/subset? (set (:stack-types (meta instr-fn))) (set types-list))))
+               @instruction-table)))
+
+
+(defn push-state-from-stacks
+  "Takes a map of stack names and entire stack states, and returns a new push-state
+   with those stacks set."
+  [& {:as stack-assignments}]
+    (merge (make-push-state) stack-assignments)
+    )
